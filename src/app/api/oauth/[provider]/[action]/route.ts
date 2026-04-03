@@ -42,6 +42,60 @@ function safeEqual(a: string | null | undefined, b: string | null | undefined): 
   return timingSafeEqual(ba, bb);
 }
 
+function buildOAuthConnectionData(tokenData: any) {
+  const now = new Date().toISOString();
+  const expiresAt = tokenData.expiresIn
+    ? new Date(Date.now() + tokenData.expiresIn * 1000).toISOString()
+    : null;
+
+  return {
+    ...tokenData,
+    expiresAt,
+    tokenExpiresAt: expiresAt,
+    lastHealthCheckAt: now,
+    testStatus: "active",
+    isActive: true,
+    lastError: null,
+    lastErrorAt: null,
+    lastErrorType: null,
+    lastErrorSource: null,
+    errorCode: null,
+  };
+}
+
+async function upsertOAuthConnection(provider: string, tokenData: any) {
+  const connectionData = buildOAuthConnectionData(tokenData);
+
+  let connection: any;
+  if (tokenData.email) {
+    const existing = await getProviderConnections({ provider });
+    const match = existing.find((c: any) => {
+      // safeEqual: constant-time comparison to prevent timing attacks (CWE-208, finding #258)
+      if (!safeEqual(c.email, tokenData.email) || c.authType !== "oauth") return false;
+      // For Codex, also check workspaceId to avoid overwriting different workspace connections
+      if (provider === "codex" && tokenData.providerSpecificData?.workspaceId) {
+        const existingWorkspace = c.providerSpecificData?.workspaceId;
+        return safeEqual(existingWorkspace, tokenData.providerSpecificData.workspaceId);
+      }
+      return true;
+    });
+    const matchId = typeof match?.id === "string" ? match.id : null;
+    if (matchId) {
+      connection = await updateProviderConnection(matchId, connectionData);
+    }
+  }
+
+  if (!connection) {
+    connection = await createProviderConnection({
+      provider,
+      authType: "oauth",
+      ...connectionData,
+    });
+  }
+
+  return connection;
+}
+
 /**
  * Dynamic OAuth API Route
  * Handles: authorize, exchange, device-code, poll, start-callback-server, poll-callback
@@ -85,10 +139,17 @@ export async function GET(
       // Resolve proxy for this provider (provider-level → global → direct)
       const proxy = await resolveProxyForProvider(provider);
 
-      // Request device code (through proxy if configured)
+      // Request device code (through proxy if configured). Some providers do not
+      // use a client-generated PKCE codeChallenge at this step. Codex's device
+      // auth flow gets PKCE material from OpenAI after authorization succeeds.
       let deviceData;
-      if (provider === "github" || provider === "kiro" || provider === "kilocode") {
-        // GitHub, Kiro, and KiloCode don't use PKCE for device code
+      if (
+        provider === "codex" ||
+        provider === "github" ||
+        provider === "kiro" ||
+        provider === "kilocode"
+      ) {
+        // Codex, GitHub, Kiro, and KiloCode don't use client-generated PKCE for device code
         deviceData = await runWithProxyContext(proxy, () => (requestDeviceCode as any)(provider));
       } else {
         // Qwen and other providers use PKCE
@@ -244,43 +305,7 @@ export async function POST(
         tokenData.name = tokenData.email || tokenData.displayName;
       }
 
-      // Upsert: update existing connection if same provider+email, else create new
-      const expiresAt = tokenData.expiresIn
-        ? new Date(Date.now() + tokenData.expiresIn * 1000).toISOString()
-        : null;
-
-      let connection: any;
-      if (tokenData.email) {
-        const existing = await getProviderConnections({ provider });
-        const match = existing.find((c: any) => {
-          // safeEqual: constant-time comparison to prevent timing attacks (CWE-208, finding #258-6/7)
-          if (!safeEqual(c.email, tokenData.email) || c.authType !== "oauth") return false;
-          // For Codex, also check workspaceId to avoid overwriting different workspace connections
-          if (provider === "codex" && tokenData.providerSpecificData?.workspaceId) {
-            const existingWorkspace = c.providerSpecificData?.workspaceId;
-            return safeEqual(existingWorkspace, tokenData.providerSpecificData.workspaceId);
-          }
-          return true;
-        });
-        const matchId = typeof match?.id === "string" ? match.id : null;
-        if (matchId) {
-          connection = await updateProviderConnection(matchId, {
-            ...tokenData,
-            expiresAt,
-            testStatus: "active",
-            isActive: true,
-          });
-        }
-      }
-      if (!connection) {
-        connection = await createProviderConnection({
-          provider,
-          authType: "oauth",
-          ...tokenData,
-          expiresAt,
-          testStatus: "active",
-        });
-      }
+      const connection = await upsertOAuthConnection(provider, tokenData);
 
       // Auto sync to Cloud if enabled
       await syncToCloudIfEnabled();
@@ -302,12 +327,18 @@ export async function POST(
       // Resolve proxy for this provider (provider-level → global → direct)
       const proxy = await resolveProxyForProvider(provider);
 
-      // Poll for token (through proxy if configured)
+      // Poll for token (through proxy if configured). Some providers do not use
+      // a client-provided codeVerifier at poll time; Codex receives PKCE material
+      // from OpenAI in the successful device-auth response.
       let result;
-      if (provider === "github" || provider === "kimi-coding" || provider === "kilocode") {
-        // For providers that don't use PKCE (like GitHub, Kiro, Kimi Coding), don't pass codeVerifier
+      if (
+        provider === "codex" ||
+        provider === "github" ||
+        provider === "kimi-coding" ||
+        provider === "kilocode"
+      ) {
         result = await runWithProxyContext(proxy, () =>
-          (pollForToken as any)(provider, deviceCode)
+          (pollForToken as any)(provider, deviceCode, null, extraData)
         );
       } else if (provider === "kiro") {
         // Kiro needs extraData (clientId, clientSecret) from device code response
@@ -330,43 +361,7 @@ export async function POST(
           result.tokens.name = result.tokens.email || result.tokens.displayName;
         }
 
-        // Upsert: update existing connection if same provider+email, else create new
-        const expiresAt = result.tokens.expiresIn
-          ? new Date(Date.now() + result.tokens.expiresIn * 1000).toISOString()
-          : null;
-
-        let connection: any;
-        if (result.tokens.email) {
-          const existing = await getProviderConnections({ provider });
-          const match = existing.find((c: any) => {
-            // safeEqual: constant-time comparison to prevent timing attacks (CWE-208, finding #258-8/9)
-            if (!safeEqual(c.email, result.tokens.email) || c.authType !== "oauth") return false;
-            // For Codex, also check workspaceId to avoid overwriting different workspace connections
-            if (provider === "codex" && result.tokens.providerSpecificData?.workspaceId) {
-              const existingWorkspace = c.providerSpecificData?.workspaceId;
-              return safeEqual(existingWorkspace, result.tokens.providerSpecificData.workspaceId);
-            }
-            return true;
-          });
-          const matchId = typeof match?.id === "string" ? match.id : null;
-          if (matchId) {
-            connection = await updateProviderConnection(matchId, {
-              ...result.tokens,
-              expiresAt,
-              testStatus: "active",
-              isActive: true,
-            });
-          }
-        }
-        if (!connection) {
-          connection = await createProviderConnection({
-            provider,
-            authType: "oauth",
-            ...result.tokens,
-            expiresAt,
-            testStatus: "active",
-          });
-        }
+        const connection = await upsertOAuthConnection(provider, result.tokens);
 
         // Auto sync to Cloud if enabled
         await syncToCloudIfEnabled();
@@ -455,43 +450,7 @@ export async function POST(
           tokenData.name = tokenData.email || tokenData.displayName;
         }
 
-        // Upsert: update existing connection if same provider+email, else create new
-        const expiresAt = tokenData.expiresIn
-          ? new Date(Date.now() + tokenData.expiresIn * 1000).toISOString()
-          : null;
-
-        let connection: any;
-        if (tokenData.email) {
-          const existing = await getProviderConnections({ provider });
-          const match = existing.find((c: any) => {
-            // safeEqual: constant-time comparison to prevent timing attacks (CWE-208, finding #258-6/7)
-            if (!safeEqual(c.email, tokenData.email) || c.authType !== "oauth") return false;
-            // For Codex, also check workspaceId to avoid overwriting different workspace connections
-            if (provider === "codex" && tokenData.providerSpecificData?.workspaceId) {
-              const existingWorkspace = c.providerSpecificData?.workspaceId;
-              return safeEqual(existingWorkspace, tokenData.providerSpecificData.workspaceId);
-            }
-            return true;
-          });
-          const matchId = typeof match?.id === "string" ? match.id : null;
-          if (matchId) {
-            connection = await updateProviderConnection(matchId, {
-              ...tokenData,
-              expiresAt,
-              testStatus: "active",
-              isActive: true,
-            });
-          }
-        }
-        if (!connection) {
-          connection = await createProviderConnection({
-            provider,
-            authType: "oauth",
-            ...tokenData,
-            expiresAt,
-            testStatus: "active",
-          });
-        }
+        const connection = await upsertOAuthConnection(provider, tokenData);
 
         await syncToCloudIfEnabled();
 

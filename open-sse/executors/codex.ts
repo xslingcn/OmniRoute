@@ -1,7 +1,7 @@
 import { BaseExecutor } from "./base.ts";
 import { CODEX_DEFAULT_INSTRUCTIONS } from "../config/codexInstructions.ts";
 import { PROVIDERS } from "../config/constants.ts";
-import { refreshCodexToken } from "../services/tokenRefresh.ts";
+import { getAccessToken } from "../services/tokenRefresh.ts";
 
 // ─── T09: Codex vs Spark Scope-Aware Rate Limiting ────────────────────────
 // Codex has two independent quota pools: "codex" (standard) and "spark" (premium).
@@ -226,7 +226,7 @@ export class CodexExecutor extends BaseExecutor {
       log?.warn?.("TOKEN_REFRESH", "Codex: no refresh token available, re-authentication required");
       return null;
     }
-    const result = await refreshCodexToken(credentials.refreshToken, log);
+    const result = await getAccessToken("codex", credentials, log);
     if (!result || result.error) {
       log?.warn?.(
         "TOKEN_REFRESH",

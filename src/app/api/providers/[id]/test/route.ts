@@ -631,7 +631,9 @@ export async function testSingleConnection(connectionId: string, validationModel
       updateData.refreshToken = result.newTokens.refreshToken;
     }
     if (result.newTokens.expiresIn) {
-      updateData.expiresAt = new Date(Date.now() + result.newTokens.expiresIn * 1000).toISOString();
+      const expiresAt = new Date(Date.now() + result.newTokens.expiresIn * 1000).toISOString();
+      updateData.expiresAt = expiresAt;
+      updateData.tokenExpiresAt = expiresAt;
     }
   }
 

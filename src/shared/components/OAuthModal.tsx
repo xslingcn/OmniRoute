@@ -6,8 +6,24 @@ import Modal from "./Modal";
 import Button from "./Button";
 import Input from "./Input";
 import { useCopyToClipboard } from "@/shared/hooks/useCopyToClipboard";
+import { isLocalNetworkHostname, isLoopbackHostname } from "@/shared/utils/oauthHosts";
 
 const GOOGLE_OAUTH_PROVIDERS = new Set(["antigravity", "gemini-cli"]);
+const DEVICE_CODE_PROVIDERS = new Set([
+  "codex",
+  "github",
+  "qwen",
+  "kiro",
+  "kimi-coding",
+  "kilocode",
+]);
+const DEVICE_CODE_PROVIDERS_WITHOUT_PKCE = new Set([
+  "codex",
+  "github",
+  "kiro",
+  "kimi-coding",
+  "kilocode",
+]);
 
 type OAuthModalProps = {
   isOpen: boolean;
@@ -49,19 +65,13 @@ export default function OAuthModal({
 
   // Detect if running on true localhost vs LAN IP (client-side only)
   // - True localhost (127.0.0.1/localhost): popup auto-callback works
-  // - LAN IPs (192.168.x, 10.x, 172.x): redirect URI uses localhost but callback
-  //   won't resolve back to the VPS, so use manual paste mode
+  // - LAN IPs (192.168.x, 10.x, 172.x): treat as remote for Codex callback handling
   const [isTrueLocalhost, setIsTrueLocalhost] = useState(false);
   useEffect(() => {
     if (typeof window !== "undefined") {
       const hostname = window.location.hostname;
-      const isLocal =
-        hostname === "localhost" ||
-        hostname === "127.0.0.1" ||
-        hostname.startsWith("192.168.") ||
-        hostname.startsWith("10.") ||
-        /^172\.(1[6-9]|2\d|3[01])\./.test(hostname);
-      const isTrulyLocal = hostname === "localhost" || hostname === "127.0.0.1";
+      const isLocal = isLocalNetworkHostname(hostname);
+      const isTrulyLocal = isLoopbackHostname(hostname);
       setIsLocalhost(isLocal);
       setIsTrueLocalhost(isTrulyLocal);
       setPlaceholderUrl(`${window.location.origin}/callback?code=...`);
@@ -174,14 +184,8 @@ export default function OAuthModal({
     try {
       setError(null);
 
-      // Device code flow (GitHub, Qwen, Kiro, Kimi Coding, KiloCode)
-      if (
-        provider === "github" ||
-        provider === "qwen" ||
-        provider === "kiro" ||
-        provider === "kimi-coding" ||
-        provider === "kilocode"
-      ) {
+      // Device code flow (Codex, GitHub, Qwen, Kiro, Kimi Coding, KiloCode)
+      if (DEVICE_CODE_PROVIDERS.has(provider)) {
         setIsDeviceCode(true);
         setStep("waiting");
 
@@ -202,77 +206,20 @@ export default function OAuthModal({
         const verifyUrl = data.verification_uri_complete || data.verification_uri;
         if (verifyUrl) window.open(verifyUrl, "oauth_verify");
 
-        // Start polling - pass extraData for Kiro (contains _clientId, _clientSecret)
+        // Start polling - pass provider-specific extraData when the polling endpoint needs it.
         const extraData =
           provider === "kiro"
             ? { _clientId: data._clientId, _clientSecret: data._clientSecret }
-            : null;
+            : provider === "codex"
+              ? { userCode: data.user_code }
+              : null;
         startPolling(data.device_code, data.codeVerifier, data.interval || 5, extraData);
         return;
       }
 
-      let forceManual = false;
-
-      // Codex: on localhost use callback server on port 1455,
-      // on remote use standard auth code flow (callback server is unreachable)
-      if (provider === "codex") {
-        if (isLocalhost) {
-          // Localhost: use callback server on port 1455 + polling
-          try {
-            const serverRes = await fetch(`/api/oauth/codex/start-callback-server`);
-            const serverData = await serverRes.json();
-            if (!serverRes.ok) throw new Error(serverData.error);
-
-            setAuthData({ ...serverData, redirectUri: serverData.redirectUri });
-            setStep("waiting");
-            popupRef.current = window.open(serverData.authUrl, "oauth_auth");
-
-            // If browser blocked the popup, switch to manual input step immediately
-            if (!popupRef.current) {
-              setStep("input");
-            }
-
-            setPolling(true);
-            const maxAttempts = 150;
-            for (let i = 0; i < maxAttempts; i++) {
-              await new Promise((r) => setTimeout(r, 2000));
-
-              const pollRes = await fetch(`/api/oauth/codex/poll-callback`, {
-                method: "POST",
-                headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({}),
-              });
-              const pollData = await pollRes.json();
-
-              if (pollData.success) {
-                setStep("success");
-                setPolling(false);
-                onSuccess?.();
-                return;
-              }
-
-              if (pollData.error && !pollData.pending) {
-                throw new Error(pollData.errorDescription || pollData.error);
-              }
-            }
-
-            setPolling(false);
-            throw new Error("Authorization timeout");
-          } catch (codexErr) {
-            console.warn(
-              "Codex callback server failed, falling back to standard manual flow",
-              codexErr
-            );
-            setPolling(false);
-            forceManual = true;
-          }
-        }
-        // Remote: fall through to standard auth code flow below
-      }
-
       // Authorization code flow
       // Redirect URI strategy:
-      // - Codex/OpenAI: always port 1455 (registered in OAuth app)
+      // - OpenAI: always port 1455 (registered in OAuth app)
       // - Google OAuth providers (antigravity, gemini-cli): always localhost, regardless of
       //   where OmniRoute is hosted — Google only accepts pre-registered localhost URIs with
       //   the built-in credentials. Remote users must configure their own credentials.
@@ -322,8 +269,8 @@ export default function OAuthModal({
 
       setAuthData({ ...data, redirectUri });
 
-      // For non-true-localhost (LAN IPs, remote) or manual fallback: use manual input mode (user pastes callback URL)
-      if (!isTrueLocalhost || forceManual) {
+      // For non-true-localhost (LAN IPs, remote): use manual input mode (user pastes callback URL)
+      if (!isTrueLocalhost) {
         setStep("input");
         window.open(data.authUrl, "oauth_auth");
       } else {

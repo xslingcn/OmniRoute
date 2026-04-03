@@ -123,8 +123,11 @@ async function refreshAndUpdateCredentials(connection: ProviderConnectionLike) {
     updateData.refreshToken = refreshResult.refreshToken;
   }
   if (refreshResult.expiresIn) {
-    updateData.tokenExpiresAt = new Date(Date.now() + refreshResult.expiresIn * 1000).toISOString();
+    const expiresAt = new Date(Date.now() + refreshResult.expiresIn * 1000).toISOString();
+    updateData.expiresAt = expiresAt;
+    updateData.tokenExpiresAt = expiresAt;
   } else if (refreshResult.expiresAt) {
+    updateData.expiresAt = refreshResult.expiresAt;
     updateData.tokenExpiresAt = refreshResult.expiresAt;
   }
   if (refreshResult.copilotToken || refreshResult.copilotTokenExpiresAt) {

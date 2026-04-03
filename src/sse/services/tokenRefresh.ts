@@ -95,7 +95,9 @@ export async function updateProviderCredentials(connectionId: string, newCredent
       updates.refreshToken = newCredentials.refreshToken;
     }
     if (newCredentials.expiresIn) {
-      updates.expiresAt = new Date(Date.now() + newCredentials.expiresIn * 1000).toISOString();
+      const expiresAt = new Date(Date.now() + newCredentials.expiresIn * 1000).toISOString();
+      updates.expiresAt = expiresAt;
+      updates.tokenExpiresAt = expiresAt;
       updates.expiresIn = newCredentials.expiresIn;
     }
     if (newCredentials.providerSpecificData) {

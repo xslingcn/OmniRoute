@@ -24,11 +24,19 @@ export const CLAUDE_CONFIG = {
   codeChallengeMethod: "S256",
 };
 
-// Codex (OpenAI) OAuth Configuration (Authorization Code Flow with PKCE)
+// Codex (OpenAI) OAuth Configuration
+// Browser auth still uses the standard token endpoint, but the preferred
+// interactive flow now starts with OpenAI's device-auth endpoints, mirroring
+// the official Codex CLI.
 export const CODEX_CONFIG = {
   clientId: process.env.CODEX_OAUTH_CLIENT_ID || "app_EMoamEEZ73f0CkXaXp7hrann",
+  issuer: "https://auth.openai.com",
   authorizeUrl: "https://auth.openai.com/oauth/authorize",
   tokenUrl: "https://auth.openai.com/oauth/token",
+  deviceCodeUrl: "https://auth.openai.com/api/accounts/deviceauth/usercode",
+  deviceTokenUrl: "https://auth.openai.com/api/accounts/deviceauth/token",
+  deviceVerificationUrl: "https://auth.openai.com/codex/device",
+  deviceRedirectUri: "https://auth.openai.com/deviceauth/callback",
   scope: "openid profile email offline_access",
   codeChallengeMethod: "S256",
   // Additional OpenAI-specific params

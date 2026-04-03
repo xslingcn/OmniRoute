@@ -24,6 +24,7 @@ const EXPIRED_RETRY_MAX = 3; // max retry attempts for expired connections befor
 const EXPIRED_RETRY_BACKOFF_MIN = 5; // backoff between expired retries (minutes)
 const LOG_PREFIX = "[HealthCheck]";
 const TRUE_ENV_VALUES = new Set(["1", "true", "yes", "on"]);
+const TOKEN_EXPIRY_BUFFER = 5 * 60 * 1000; // 5 minutes
 
 function isEnvFlagEnabled(name: string): boolean {
   const value = process.env[name];
@@ -33,6 +34,29 @@ function isEnvFlagEnabled(name: string): boolean {
 
 function isHealthCheckDisabled(): boolean {
   return isEnvFlagEnabled("OMNIROUTE_DISABLE_TOKEN_HEALTHCHECK") || process.env.NODE_ENV === "test";
+}
+
+function toDateMs(value: unknown): number | null {
+  if (typeof value !== "string" || !value.trim()) return null;
+  const parsed = new Date(value).getTime();
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+export function shouldSeedInitialHealthCheck(
+  conn: {
+    lastHealthCheckAt?: string | null;
+    testStatus?: string | null;
+    tokenExpiresAt?: string | null;
+  },
+  now = Date.now()
+): boolean {
+  if (conn.lastHealthCheckAt) return false;
+  if (conn.testStatus === "expired") return false;
+
+  const tokenExpiresAtMs = toDateMs(conn.tokenExpiresAt);
+  if (tokenExpiresAtMs === null) return true;
+
+  return tokenExpiresAtMs - now >= TOKEN_EXPIRY_BUFFER;
 }
 
 // ── Logging helper ───────────────────────────────────────────────────────────
@@ -202,9 +226,17 @@ async function checkConnection(conn) {
 
   // Proactive pre-expiry check (#631): if token is about to expire, refresh immediately
   // regardless of the health check interval — prevents request failures between checks
-  const TOKEN_EXPIRY_BUFFER = 5 * 60 * 1000; // 5 minutes
   const tokenExpiresAt = conn.tokenExpiresAt ? new Date(conn.tokenExpiresAt).getTime() : 0;
   const isAboutToExpire = tokenExpiresAt > 0 && tokenExpiresAt - Date.now() < TOKEN_EXPIRY_BUFFER;
+
+  if (shouldSeedInitialHealthCheck(conn)) {
+    const now = new Date().toISOString();
+    await updateProviderConnection(conn.id, { lastHealthCheckAt: now });
+    log(
+      `${LOG_PREFIX} Seeded baseline for ${conn.provider}/${conn.name || conn.email || conn.id}; deferring first refresh until due`
+    );
+    return;
+  }
 
   // Not yet due: skip if (a) interval hasn't elapsed AND (b) token is not about to expire
   if (Date.now() - lastCheck < intervalMs && !isAboutToExpire) return;
@@ -279,7 +311,9 @@ async function checkConnection(conn) {
     }
 
     if (result.expiresIn) {
-      updateData.tokenExpiresAt = new Date(Date.now() + result.expiresIn * 1000).toISOString();
+      const expiresAt = new Date(Date.now() + result.expiresIn * 1000).toISOString();
+      updateData.expiresAt = expiresAt;
+      updateData.tokenExpiresAt = expiresAt;
     }
 
     if (result.providerSpecificData) {

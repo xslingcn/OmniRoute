@@ -23,6 +23,7 @@ interface CodexConnectionLike {
   refreshToken?: string | null;
   idToken?: string | null;
   expiresAt?: string | null;
+  tokenExpiresAt?: string | null;
   expiresIn?: number | null;
   providerSpecificData?: JsonRecord | null;
 }
@@ -98,7 +99,8 @@ function shouldRefreshCodexConnection(connection: CodexConnectionLike): boolean 
     return true;
   }
 
-  const expiresAt = toNonEmptyString(connection.expiresAt);
+  const expiresAt =
+    toNonEmptyString(connection.tokenExpiresAt) || toNonEmptyString(connection.expiresAt);
   if (!expiresAt) {
     return false;
   }
@@ -213,7 +215,7 @@ async function resolveFreshCodexConnection(connectionId: string): Promise<CodexC
     connectionId,
     accessToken: connection.accessToken,
     refreshToken,
-    expiresAt: connection.expiresAt,
+    expiresAt: connection.tokenExpiresAt || connection.expiresAt,
     expiresIn: connection.expiresIn,
     idToken: connection.idToken,
     providerSpecificData: connection.providerSpecificData,

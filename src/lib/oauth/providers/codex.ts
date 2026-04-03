@@ -79,25 +79,39 @@ function parseIdToken(idToken: string): { email: string | null; authInfo: CodexA
 
 export const codex = {
   config: CODEX_CONFIG,
-  flowType: "authorization_code_pkce",
-  fixedPort: 1455,
-  callbackPath: "/auth/callback",
+  flowType: "device_code",
+  requestDeviceCode: async (config) => {
+    const response = await fetch(config.deviceCodeUrl, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Accept: "application/json",
+      },
+      body: JSON.stringify({
+        client_id: config.clientId,
+      }),
+    });
 
-  buildAuthUrl: (config, redirectUri, state, codeChallenge) => {
-    const params = {
-      response_type: "code",
-      client_id: config.clientId,
-      redirect_uri: redirectUri,
-      scope: config.scope,
-      code_challenge: codeChallenge,
-      code_challenge_method: config.codeChallengeMethod,
-      ...config.extraParams,
-      state: state,
+    if (!response.ok) {
+      if (response.status === 404) {
+        throw new Error(
+          "Codex device code login is not enabled for this OpenAI server. Use another auth method or verify the issuer URL."
+        );
+      }
+
+      const error = await response.text();
+      throw new Error(`Device code request failed: ${error}`);
+    }
+
+    const data = await response.json();
+    return {
+      device_code: data.device_auth_id,
+      user_code: data.user_code || data.usercode,
+      verification_uri: config.deviceVerificationUrl,
+      verification_uri_complete: config.deviceVerificationUrl,
+      interval: Number.parseInt(String(data.interval || "5"), 10) || 5,
+      expires_in: 15 * 60,
     };
-    const queryString = Object.entries(params)
-      .map(([key, value]) => `${key}=${encodeURIComponent(value as string)}`)
-      .join("&");
-    return `${config.authorizeUrl}?${queryString}`;
   },
 
   exchangeToken: async (config, code, redirectUri, codeVerifier) => {
@@ -122,6 +136,52 @@ export const codex = {
     }
 
     return await response.json();
+  },
+  pollToken: async (config, deviceCode, _codeVerifier, extraData) => {
+    const response = await fetch(config.deviceTokenUrl, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Accept: "application/json",
+      },
+      body: JSON.stringify({
+        device_auth_id: deviceCode,
+        user_code: extraData?.userCode,
+      }),
+    });
+
+    if (response.status === 403 || response.status === 404) {
+      return {
+        ok: false,
+        data: {
+          error: "authorization_pending",
+        },
+      };
+    }
+
+    if (!response.ok) {
+      const error = await response.text();
+      return {
+        ok: false,
+        data: {
+          error: "device_auth_failed",
+          error_description: error || `Device auth failed with status ${response.status}`,
+        },
+      };
+    }
+
+    const codeData = await response.json();
+    const tokens = await codex.exchangeToken(
+      config,
+      codeData.authorization_code,
+      config.deviceRedirectUri,
+      codeData.code_verifier
+    );
+
+    return {
+      ok: true,
+      data: tokens,
+    };
   },
 
   /**
