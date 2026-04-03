@@ -5,7 +5,9 @@ import { filterToOpenAIFormat } from "./helpers/openaiHelper.ts";
 import {
   coerceToolSchemas,
   injectEmptyReasoningContentForToolCalls,
+  sanitizeToolChoice,
   sanitizeToolDescriptions,
+  sanitizeToolNames,
 } from "./helpers/schemaCoercion.ts";
 import { getRequestTranslator, getResponseTranslator } from "./registry.ts";
 import { bootstrapTranslatorRegistry } from "./bootstrap.ts";
@@ -189,6 +191,7 @@ export function translateRequest(
   if (result.tools !== undefined) {
     result.tools = coerceToolSchemas(result.tools);
     result.tools = sanitizeToolDescriptions(result.tools);
+    result.tools = sanitizeToolNames(result.tools);
   }
 
   if (targetFormat === FORMATS.OPENAI && result.messages && Array.isArray(result.messages)) {
@@ -202,6 +205,11 @@ export function translateRequest(
   if (result.tools) {
     result.tools = coerceToolSchemas(result.tools);
     result.tools = sanitizeToolDescriptions(result.tools);
+    result.tools = sanitizeToolNames(result.tools);
+  }
+
+  if (result.tool_choice !== undefined) {
+    result.tool_choice = sanitizeToolChoice(result.tool_choice);
   }
 
   // Inject reasoning_content = "" for DeepSeek/Reasoning models assistant messages with tool_calls

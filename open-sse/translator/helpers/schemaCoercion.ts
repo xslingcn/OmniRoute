@@ -44,6 +44,10 @@ function sanitizeDescriptionValue(value: unknown): string | undefined {
   return typeof value === "string" ? value : String(value);
 }
 
+function hasNonEmptyName(value: unknown): boolean {
+  return typeof value === "string" && value.trim().length > 0;
+}
+
 export function coerceSchemaNumericFields(schema: unknown): unknown {
   if (Array.isArray(schema)) {
     return schema.map((entry) => coerceSchemaNumericFields(entry));
@@ -187,6 +191,60 @@ export function sanitizeToolId(id: string | undefined): string {
   if (!id) return `tool_${crypto.randomUUID().replace(/-/g, "_")}`;
   const sanitized = id.replace(/[^a-zA-Z0-9_-]/g, "_");
   return sanitized || `tool_${crypto.randomUUID().replace(/-/g, "_")}`;
+}
+
+export function sanitizeToolNames(tools: unknown): unknown {
+  if (!Array.isArray(tools)) return tools;
+
+  return tools.flatMap((tool) => {
+    if (!isPlainObject(tool)) return [tool];
+
+    const result: JsonRecord = { ...tool };
+
+    if (Array.isArray(result.functionDeclarations)) {
+      result.functionDeclarations = result.functionDeclarations.filter(
+        (declaration) => !isPlainObject(declaration) || hasNonEmptyName(declaration.name)
+      );
+
+      return result.functionDeclarations.length > 0 ? [result] : [];
+    }
+
+    if (isPlainObject(result.function)) {
+      return hasNonEmptyName(result.function.name) ? [result] : [];
+    }
+
+    if (result.type === "function") {
+      return hasNonEmptyName(result.name) ? [result] : [];
+    }
+
+    if (
+      result.name !== undefined ||
+      result.input_schema !== undefined ||
+      result.description !== undefined
+    ) {
+      return hasNonEmptyName(result.name) ? [result] : [];
+    }
+
+    return [result];
+  });
+}
+
+export function sanitizeToolChoice(toolChoice: unknown): unknown {
+  if (!isPlainObject(toolChoice)) return toolChoice;
+
+  if (toolChoice.type === "function") {
+    if (isPlainObject(toolChoice.function)) {
+      return hasNonEmptyName(toolChoice.function.name) ? toolChoice : undefined;
+    }
+
+    return hasNonEmptyName(toolChoice.name) ? toolChoice : undefined;
+  }
+
+  if (toolChoice.type === "tool" || toolChoice.type === "required-tool") {
+    return hasNonEmptyName(toolChoice.name) ? toolChoice : undefined;
+  }
+
+  return toolChoice;
 }
 
 export function injectEmptyReasoningContentForToolCalls(

@@ -2,6 +2,7 @@ import { getCorsOrigin } from "../utils/cors.ts";
 import { detectFormatFromEndpoint, getTargetFormat } from "../services/provider.ts";
 import { translateRequest, needsTranslation } from "../translator/index.ts";
 import { FORMATS } from "../translator/formats.ts";
+import { sanitizeToolChoice, sanitizeToolNames } from "../translator/helpers/schemaCoercion.ts";
 import {
   createSSETransformStreamWithLogger,
   createPassthroughStreamWithLogger,
@@ -712,11 +713,10 @@ export async function handleChatCore({
   // Clients sometimes forward tool definitions with empty names, causing
   // upstream providers to reject with 400 "Invalid 'tools[0].name': empty string."
   if (Array.isArray(body.tools)) {
-    body.tools = body.tools.filter((tool: Record<string, unknown>) => {
-      const fn = tool.function as Record<string, unknown> | undefined;
-      const name = fn?.name ?? tool.name;
-      return name && String(name).trim().length > 0;
-    });
+    body.tools = sanitizeToolNames(body.tools) as typeof body.tools;
+  }
+  if (body.tool_choice !== undefined) {
+    body.tool_choice = sanitizeToolChoice(body.tool_choice);
   }
 
   const memorySettings = apiKeyInfo?.id
@@ -1023,6 +1023,13 @@ export async function handleChatCore({
       : nativeClaudeToolNameMap;
   delete translatedBody._toolNameMap;
   delete translatedBody._disableToolPrefix;
+
+  if (translatedBody.tools !== undefined) {
+    translatedBody.tools = sanitizeToolNames(translatedBody.tools);
+  }
+  if (translatedBody.tool_choice !== undefined) {
+    translatedBody.tool_choice = sanitizeToolChoice(translatedBody.tool_choice);
+  }
 
   // Update model in body — use resolved alias so the provider gets the correct model ID (#472)
   translatedBody.model = effectiveModel;

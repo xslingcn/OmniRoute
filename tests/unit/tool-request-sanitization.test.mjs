@@ -3,9 +3,11 @@ import assert from "node:assert/strict";
 
 const {
   coerceSchemaNumericFields,
+  sanitizeToolChoice,
   sanitizeToolDescription,
   coerceToolSchemas,
   sanitizeToolDescriptions,
+  sanitizeToolNames,
   injectEmptyReasoningContentForToolCalls,
 } = await import("../../open-sse/translator/helpers/schemaCoercion.ts");
 const { translateRequest } = await import("../../open-sse/translator/index.ts");
@@ -148,6 +150,83 @@ test("translateRequest sanitizes OpenAI tool payloads on passthrough", () => {
 
   assert.equal(translated.tools[0].function.description, "7");
   assert.equal(translated.tools[0].function.parameters.properties.count.minimum, 2);
+});
+
+test("tool sanitization: drops function tools with empty names across OpenAI, Claude, and Gemini shapes", () => {
+  const tools = sanitizeToolNames([
+    { type: "function", function: { name: "", parameters: {} } },
+    { type: "function", function: { name: "sum", parameters: {} } },
+    { name: "   ", description: "ghost", input_schema: { type: "object" } },
+    { name: "search", description: "ok", input_schema: { type: "object" } },
+    {
+      functionDeclarations: [
+        { name: "", description: "ghost", parameters: {} },
+        { name: "lookup", description: "ok", parameters: {} },
+      ],
+    },
+    { type: "web_search_preview" },
+  ]);
+
+  assert.equal(tools.length, 4);
+  assert.equal(tools[0].function.name, "sum");
+  assert.equal(tools[1].name, "search");
+  assert.equal(tools[2].functionDeclarations.length, 1);
+  assert.equal(tools[2].functionDeclarations[0].name, "lookup");
+  assert.equal(tools[3].type, "web_search_preview");
+});
+
+test("tool sanitization: drops invalid function tool_choice names", () => {
+  assert.equal(sanitizeToolChoice({ type: "function", function: { name: "" } }), undefined);
+  assert.deepEqual(sanitizeToolChoice({ type: "function", function: { name: "sum" } }), {
+    type: "function",
+    function: { name: "sum" },
+  });
+});
+
+test("translateRequest sanitizes empty function tool names after Responses -> OpenAI translation", () => {
+  const translated = translateRequest(
+    FORMATS.OPENAI_RESPONSES,
+    FORMATS.OPENAI,
+    "gpt-5.2",
+    {
+      input: [{ type: "message", role: "user", content: [{ type: "input_text", text: "hello" }] }],
+      tools: [
+        { type: "function", name: "", description: "ghost", parameters: { type: "object" } },
+        { type: "function", name: "sum", description: "ok", parameters: { type: "object" } },
+      ],
+      tool_choice: { type: "function", name: "" },
+    },
+    false,
+    null,
+    "openai"
+  );
+
+  assert.equal(translated.tools.length, 1);
+  assert.equal(translated.tools[0].function.name, "sum");
+  assert.equal(translated.tool_choice, undefined);
+});
+
+test("translateRequest sanitizes empty function tool names after OpenAI -> Responses translation", () => {
+  const translated = translateRequest(
+    FORMATS.OPENAI,
+    FORMATS.OPENAI_RESPONSES,
+    "gpt-5.2",
+    {
+      messages: [{ role: "user", content: "hello" }],
+      tools: [
+        { type: "function", function: { name: "", description: "ghost", parameters: {} } },
+        { type: "function", function: { name: "sum", description: "ok", parameters: {} } },
+      ],
+      tool_choice: { type: "function", function: { name: "" } },
+    },
+    false,
+    null,
+    "openai"
+  );
+
+  assert.equal(translated.tools.length, 1);
+  assert.equal(translated.tools[0].name, "sum");
+  assert.equal(translated.tool_choice, undefined);
 });
 
 test("tool sanitization: injects empty reasoning_content only for DeepSeek tool-call history", () => {
