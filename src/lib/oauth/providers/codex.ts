@@ -171,17 +171,42 @@ export const codex = {
     }
 
     const codeData = await response.json();
-    const tokens = await codex.exchangeToken(
-      config,
-      codeData.authorization_code,
-      config.deviceRedirectUri,
-      codeData.code_verifier
-    );
+    const authorizationCode =
+      codeData.authorization_code || codeData.authorizationCode || codeData.code || null;
+    const codeVerifier = codeData.code_verifier || codeData.codeVerifier || null;
 
-    return {
-      ok: true,
-      data: tokens,
-    };
+    if (!authorizationCode || !codeVerifier) {
+      return {
+        ok: false,
+        data: {
+          error: "device_auth_invalid_response",
+          error_description:
+            "OpenAI device auth completed, but the response did not include an authorization_code/code_verifier pair.",
+        },
+      };
+    }
+
+    try {
+      const tokens = await codex.exchangeToken(
+        config,
+        authorizationCode,
+        config.deviceRedirectUri,
+        codeVerifier
+      );
+
+      return {
+        ok: true,
+        data: tokens,
+      };
+    } catch (error) {
+      return {
+        ok: false,
+        data: {
+          error: "token_exchange_failed",
+          error_description: error instanceof Error ? error.message : String(error),
+        },
+      };
+    }
   },
 
   /**

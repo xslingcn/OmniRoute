@@ -149,6 +149,15 @@ export default function OAuthModal({
 
           const data = await res.json();
 
+          if (!res.ok) {
+            const errMsg =
+              typeof data.error === "object" && data.error !== null
+                ? ((data.error as Record<string, unknown>).message as string) ||
+                  JSON.stringify(data.error)
+                : data.errorDescription || data.error || "Polling failed";
+            throw new Error(errMsg);
+          }
+
           if (data.success) {
             setStep("success");
             setPolling(false);
@@ -156,7 +165,10 @@ export default function OAuthModal({
             return;
           }
 
-          if (data.error === "expired_token" || data.error === "access_denied") {
+          const isPending =
+            data.pending || data.error === "authorization_pending" || data.error === "slow_down";
+
+          if (!isPending) {
             throw new Error(data.errorDescription || data.error);
           }
 

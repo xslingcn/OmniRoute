@@ -125,3 +125,43 @@ test("Codex device auth treats 403/404 polling responses as authorization_pendin
   assert.equal(result.ok, false);
   assert.equal(result.data.error, "authorization_pending");
 });
+
+test("Codex device auth surfaces token exchange failures as terminal errors", async () => {
+  const errorBody = {
+    error: {
+      code: "token_exchange_user_error",
+      type: "invalid_request_error",
+      message: "Invalid request. Please try again later.",
+      param: null,
+    },
+  };
+
+  globalThis.fetch = async (url) => {
+    if (String(url) === CODEX_CONFIG.deviceTokenUrl) {
+      return new Response(
+        JSON.stringify({
+          authorization_code: "auth-code-123",
+          code_verifier: "verifier-123",
+        }),
+        {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        }
+      );
+    }
+
+    return new Response(JSON.stringify(errorBody), {
+      status: 400,
+      headers: { "Content-Type": "application/json" },
+    });
+  };
+
+  const result = await codex.pollToken(CODEX_CONFIG, "device-auth-123", null, {
+    userCode: "ABCD-EFGH",
+  });
+
+  assert.equal(result.ok, false);
+  assert.equal(result.data.error, "token_exchange_failed");
+  assert.match(result.data.error_description, /token_exchange_user_error/);
+  assert.match(result.data.error_description, /Invalid request\. Please try again later\./);
+});
