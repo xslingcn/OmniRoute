@@ -45,6 +45,20 @@ function buildAnthropicCompatibleUrl(baseUrl) {
   return `${normalized}/messages`;
 }
 
+function hasResponsesSpecificFields(body) {
+  const record = body && typeof body === "object" ? body : {};
+  const hasInputField =
+    Object.prototype.hasOwnProperty.call(record, "input") && record.input !== undefined;
+
+  return (
+    hasInputField ||
+    record.max_output_tokens !== undefined ||
+    record.previous_response_id !== undefined ||
+    record.reasoning !== undefined ||
+    record.conversation_id !== undefined
+  );
+}
+
 // Detect request format from endpoint first when the route is known.
 // This avoids ambiguous bodies like OpenAI /chat/completions requests that also
 // contain max_tokens or Claude model names.
@@ -63,6 +77,12 @@ export function detectFormatFromEndpoint(body, endpointPath = "") {
     /\/(?:chat\/completions|completions)(?=\/|$)/i.test(path) ||
     /^(?:chat\/completions|completions)(?=\/|$)/i.test(path)
   ) {
+    // Some clients send Responses-style payloads to /chat/completions while still
+    // expecting Codex/OpenAI Responses semantics. Keep explicit responses fields
+    // authoritative so we do not translate away a valid `input` payload.
+    if (hasResponsesSpecificFields(body)) {
+      return "openai-responses";
+    }
     return "openai";
   }
 
@@ -74,13 +94,7 @@ export function detectFormat(body) {
   // OpenAI Responses API:
   // - input can be string, array, or object (not only array)
   // - some clients send responses-specific fields even when input is omitted
-  const hasInputField =
-    Object.prototype.hasOwnProperty.call(body, "input") && body.input !== undefined;
-  const hasResponsesSpecificFields =
-    body.max_output_tokens !== undefined ||
-    body.previous_response_id !== undefined ||
-    body.reasoning !== undefined;
-  if (hasInputField || hasResponsesSpecificFields) {
+  if (hasResponsesSpecificFields(body)) {
     return "openai-responses";
   }
 

@@ -287,10 +287,16 @@ export const providerChatCompletionSchema = z
   })
   .catchall(z.unknown())
   .superRefine((value, ctx) => {
-    if (value.messages === undefined && value.input === undefined && value.prompt === undefined) {
+    if (
+      value.messages === undefined &&
+      value.input === undefined &&
+      value.prompt === undefined &&
+      value.previous_response_id === undefined &&
+      value.conversation_id === undefined
+    ) {
       ctx.addIssue({
         code: z.ZodIssueCode.custom,
-        message: "messages, input or prompt is required",
+        message: "messages, input, prompt, previous_response_id or conversation_id is required",
         path: [],
       });
     }

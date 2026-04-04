@@ -22,6 +22,31 @@ function toString(value: unknown, fallback = ""): string {
   return typeof value === "string" ? value : fallback;
 }
 
+function normalizeResponsesInputValue(value: unknown): JsonRecord[] {
+  if (Array.isArray(value)) {
+    return value.map((item) => toRecord(item));
+  }
+
+  if (typeof value === "string") {
+    return [
+      {
+        type: "message",
+        role: "user",
+        content: [{ type: "input_text", text: value }],
+      },
+    ];
+  }
+
+  if (value && typeof value === "object") {
+    const item = toRecord(value);
+    if (item.type || item.role || item.content) {
+      return [item];
+    }
+  }
+
+  return [];
+}
+
 function unsupportedFeature(message: string): Error & { statusCode: number; errorType: string } {
   const error = new Error(message) as Error & { statusCode: number; errorType: string };
   error.statusCode = 400;
@@ -290,9 +315,12 @@ export function openaiToOpenAIResponsesRequest(
   void credentials;
 
   const root = toRecord(body);
+  const messages = toArray(root.messages);
+  const preservedInput = normalizeResponsesInputValue(root.input);
+  const shouldPreserveInput = preservedInput.length > 0 && messages.length === 0;
   const result: JsonRecord = {
     model,
-    input: [],
+    input: shouldPreserveInput ? preservedInput : [],
     stream: true,
     store: false,
   };
@@ -301,7 +329,6 @@ export function openaiToOpenAIResponsesRequest(
 
   // Extract first system message as instructions
   let hasSystemMessage = false;
-  const messages = toArray(root.messages);
 
   for (const messageValue of messages) {
     const msg = toRecord(messageValue);
@@ -474,7 +501,7 @@ export function openaiToOpenAIResponsesRequest(
   });
 
   // If no system message, keep empty instructions
-  if (!hasSystemMessage) {
+  if (!hasSystemMessage && !shouldPreserveInput) {
     result.instructions = "";
   }
 

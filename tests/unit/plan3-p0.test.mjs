@@ -372,6 +372,18 @@ test("detectFormatFromEndpoint forces OpenAI for /v1/chat/completions", () => {
   assert.equal(format, FORMATS.OPENAI);
 });
 
+test("detectFormatFromEndpoint keeps explicit responses payloads on /v1/chat/completions", () => {
+  const format = detectFormatFromEndpoint(
+    {
+      model: "codex/gpt-5.4",
+      input: [{ role: "user", content: [{ type: "input_text", text: "ship it" }] }],
+      stream: true,
+    },
+    "/v1/chat/completions"
+  );
+  assert.equal(format, FORMATS.OPENAI_RESPONSES);
+});
+
 test("detectFormatFromEndpoint forces Claude for /v1/messages", () => {
   const format = detectFormatFromEndpoint(
     {
@@ -404,6 +416,33 @@ test("translateRequest normalizes openai-responses input string into list payloa
   assert.equal(translated.input[0].role, "user");
   assert.equal(translated.input[0].content[0].type, "input_text");
   assert.equal(translated.input[0].content[0].text, "hello from responses");
+});
+
+test("translateRequest preserves explicit responses input when source was forced to openai", () => {
+  const originalInput = [
+    { type: "message", role: "system", content: "You are GPT-5.4." },
+    {
+      type: "message",
+      role: "user",
+      content: [{ type: "input_text", text: "讲一下这个project" }],
+    },
+  ];
+
+  const translated = translateRequest(
+    FORMATS.OPENAI,
+    FORMATS.OPENAI_RESPONSES,
+    "gpt-5.4",
+    {
+      model: "codex/gpt-5.4",
+      input: originalInput,
+      stream: true,
+      store: false,
+    },
+    true
+  );
+
+  assert.deepEqual(translated.input, originalInput);
+  assert.equal(translated.instructions, undefined);
 });
 
 test("translateRequest preserves service_tier when converting openai to openai-responses", () => {
