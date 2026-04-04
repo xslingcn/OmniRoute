@@ -62,6 +62,8 @@ export default function OAuthModal({
   const [placeholderUrl, setPlaceholderUrl] = useState("/callback?code=...");
   const callbackProcessedRef = useRef(false);
   const flowStartedRef = useRef(false);
+  const pollingRunRef = useRef<string | null>(null);
+  const pollingActiveRef = useRef(false);
 
   // Detect if running on true localhost vs LAN IP (client-side only)
   // - True localhost (127.0.0.1/localhost): popup auto-callback works
@@ -134,13 +136,23 @@ export default function OAuthModal({
   // Poll for device code token
   const startPolling = useCallback(
     async (deviceCode, codeVerifier, interval, extraData) => {
+      if (pollingActiveRef.current) return;
+      const pollRunId = `${provider}:${deviceCode}:${Date.now()}`;
+      pollingRunRef.current = pollRunId;
+      pollingActiveRef.current = true;
       setPolling(true);
       const maxAttempts = 60;
 
       for (let i = 0; i < maxAttempts; i++) {
+        if (pollingRunRef.current !== pollRunId) {
+          return;
+        }
         await new Promise((r) => setTimeout(r, interval * 1000));
 
         try {
+          if (pollingRunRef.current !== pollRunId) {
+            return;
+          }
           const res = await fetch(`/api/oauth/${provider}/poll`, {
             method: "POST",
             headers: { "Content-Type": "application/json" },
@@ -159,6 +171,8 @@ export default function OAuthModal({
           }
 
           if (data.success) {
+            pollingRunRef.current = null;
+            pollingActiveRef.current = false;
             setStep("success");
             setPolling(false);
             onSuccess?.();
@@ -176,6 +190,8 @@ export default function OAuthModal({
             interval = Math.min(interval + 5, 30);
           }
         } catch (err) {
+          pollingRunRef.current = null;
+          pollingActiveRef.current = false;
           setError(err.message);
           setStep("error");
           setPolling(false);
@@ -183,6 +199,8 @@ export default function OAuthModal({
         }
       }
 
+      pollingRunRef.current = null;
+      pollingActiveRef.current = false;
       setError("Authorization timeout");
       setStep("error");
       setPolling(false);
@@ -305,8 +323,17 @@ export default function OAuthModal({
   useEffect(() => {
     if (!isOpen) {
       flowStartedRef.current = false;
+      pollingRunRef.current = null;
+      pollingActiveRef.current = false;
     }
   }, [isOpen]);
+
+  useEffect(() => {
+    return () => {
+      pollingRunRef.current = null;
+      pollingActiveRef.current = false;
+    };
+  }, []);
 
   // Reset state and start OAuth when modal opens
   useEffect(() => {

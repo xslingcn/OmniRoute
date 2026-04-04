@@ -5,6 +5,7 @@ import { syncToCloud } from "@/lib/cloudSync";
 import { createKeySchema } from "@/shared/validation/schemas";
 import { isValidationFailure, validateBody } from "@/shared/validation/helpers";
 import { isApiKeyRevealEnabled, maskStoredApiKey } from "@/lib/apiKeyExposure";
+import { getIdempotencyKey, checkIdempotency, saveIdempotency } from "@/lib/idempotencyLayer";
 
 // GET /api/keys - List API keys
 export async function GET() {
@@ -24,6 +25,12 @@ export async function GET() {
 // POST /api/keys - Create new API key
 export async function POST(request) {
   try {
+    const idempotencyKey = getIdempotencyKey(request.headers);
+    const cached = checkIdempotency(idempotencyKey);
+    if (cached) {
+      return NextResponse.json(cached.response, { status: cached.status });
+    }
+
     const body = await request.json();
 
     // Zod validation
@@ -40,15 +47,15 @@ export async function POST(request) {
     // Auto sync to Cloud if enabled
     await syncKeysToCloudIfEnabled();
 
-    return NextResponse.json(
-      {
-        key: apiKey.key,
-        name: apiKey.name,
-        id: apiKey.id,
-        machineId: apiKey.machineId,
-      },
-      { status: 201 }
-    );
+    const responseBody = {
+      key: apiKey.key,
+      name: apiKey.name,
+      id: apiKey.id,
+      machineId: apiKey.machineId,
+    };
+    saveIdempotency(idempotencyKey, responseBody, 201);
+
+    return NextResponse.json(responseBody, { status: 201 });
   } catch (error) {
     console.log("Error creating key:", error);
     return NextResponse.json({ error: "Failed to create key" }, { status: 500 });

@@ -77,3 +77,34 @@ test("GET /api/keys/[id]/reveal returns the full key when reveal is enabled", as
   assert.equal(response.status, 200);
   assert.equal(body.key, created.key);
 });
+
+test("POST /api/keys is idempotent when the same Idempotency-Key is reused", async () => {
+  const requestOne = new Request("http://localhost/api/keys", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "Idempotency-Key": "same-create-request",
+    },
+    body: JSON.stringify({ name: "Primary Key" }),
+  });
+  const requestTwo = new Request("http://localhost/api/keys", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "Idempotency-Key": "same-create-request",
+    },
+    body: JSON.stringify({ name: "Primary Key" }),
+  });
+
+  const firstResponse = await listRoute.POST(requestOne);
+  const secondResponse = await listRoute.POST(requestTwo);
+  const firstBody = await firstResponse.json();
+  const secondBody = await secondResponse.json();
+  const keys = await apiKeysDb.getApiKeys();
+
+  assert.equal(firstResponse.status, 201);
+  assert.equal(secondResponse.status, 201);
+  assert.equal(keys.length, 1);
+  assert.equal(firstBody.id, secondBody.id);
+  assert.equal(firstBody.key, secondBody.key);
+});

@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect, useMemo, useCallback, memo } from "react";
+import { useState, useEffect, useMemo, useCallback, memo, useRef } from "react";
 import { Card, Button, Input, Modal, CardSkeleton } from "@/shared/components";
 import { useCopyToClipboard } from "@/shared/hooks/useCopyToClipboard";
 import { useTranslations } from "next-intl";
@@ -112,6 +112,7 @@ export default function ApiManagerPageClient() {
   const [usageStats, setUsageStats] = useState<Record<string, KeyUsageStats>>({});
   const [sessionCounts, setSessionCounts] = useState<Record<string, number>>({});
   const [allowKeyReveal, setAllowKeyReveal] = useState(false);
+  const createKeyRequestRef = useRef<string | null>(null);
 
   const { copied, copy } = useCopyToClipboard();
 
@@ -220,6 +221,10 @@ export default function ApiManagerPageClient() {
   const clearError = useCallback(() => setError(null), []);
 
   const handleCreateKey = async () => {
+    if (createKeyRequestRef.current || isSubmitting) {
+      return;
+    }
+
     // Validate and sanitize input
     const sanitizedName = sanitizeInput(newKeyName);
     const validation = validateKeyName(sanitizedName, t);
@@ -231,11 +236,19 @@ export default function ApiManagerPageClient() {
 
     setIsSubmitting(true);
     clearError();
+    const requestId =
+      typeof crypto !== "undefined" && typeof crypto.randomUUID === "function"
+        ? `api-key-create:${crypto.randomUUID()}`
+        : `api-key-create:${Date.now()}`;
+    createKeyRequestRef.current = requestId;
 
     try {
       const res = await fetch("/api/keys", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: {
+          "Content-Type": "application/json",
+          "Idempotency-Key": requestId,
+        },
         body: JSON.stringify({ name: sanitizedName }),
       });
       const data = await res.json();
@@ -252,6 +265,7 @@ export default function ApiManagerPageClient() {
       console.error("Error creating key:", error);
       setError(t("failedCreateKeyRetry"));
     } finally {
+      createKeyRequestRef.current = null;
       setIsSubmitting(false);
     }
   };
@@ -759,6 +773,7 @@ export default function ApiManagerPageClient() {
           <div className="flex gap-2">
             <Button
               onClick={() => {
+                createKeyRequestRef.current = null;
                 setShowAddModal(false);
                 setNewKeyName("");
               }}
@@ -767,7 +782,12 @@ export default function ApiManagerPageClient() {
             >
               {tc("cancel")}
             </Button>
-            <Button onClick={handleCreateKey} fullWidth disabled={!newKeyName.trim()}>
+            <Button
+              onClick={handleCreateKey}
+              fullWidth
+              disabled={!newKeyName.trim() || isSubmitting}
+              loading={isSubmitting}
+            >
               {t("createKey")}
             </Button>
           </div>

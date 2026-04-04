@@ -24,6 +24,7 @@ import {
   oauthPollSchema,
 } from "@/shared/validation/schemas";
 import { isValidationFailure, validateBody } from "@/shared/validation/helpers";
+import { shareDevicePollResult } from "@/lib/oauth/devicePollCache";
 
 // Use globalThis to persist callback server state across Next.js HMR reloads
 if (!globalThis.__codexCallbackState) {
@@ -323,68 +324,85 @@ export async function POST(
 
     if (action === "poll") {
       const { deviceCode, codeVerifier, extraData } = body;
+      const response = await shareDevicePollResult(provider, deviceCode, async () => {
+        // Resolve proxy for this provider (provider-level → global → direct)
+        const proxy = await resolveProxyForProvider(provider);
 
-      // Resolve proxy for this provider (provider-level → global → direct)
-      const proxy = await resolveProxyForProvider(provider);
-
-      // Poll for token (through proxy if configured). Some providers do not use
-      // a client-provided codeVerifier at poll time; Codex receives PKCE material
-      // from OpenAI in the successful device-auth response.
-      let result;
-      if (
-        provider === "codex" ||
-        provider === "github" ||
-        provider === "kimi-coding" ||
-        provider === "kilocode"
-      ) {
-        result = await runWithProxyContext(proxy, () =>
-          (pollForToken as any)(provider, deviceCode, null, extraData)
-        );
-      } else if (provider === "kiro") {
-        // Kiro needs extraData (clientId, clientSecret) from device code response
-        result = await runWithProxyContext(proxy, () =>
-          (pollForToken as any)(provider, deviceCode, null, extraData)
-        );
-      } else {
-        // Qwen and other providers use PKCE
-        if (!codeVerifier) {
-          return NextResponse.json({ error: "Missing code verifier" }, { status: 400 });
+        // Poll for token (through proxy if configured). Some providers do not use
+        // a client-provided codeVerifier at poll time; Codex receives PKCE material
+        // from OpenAI in the successful device-auth response.
+        let result;
+        if (
+          provider === "codex" ||
+          provider === "github" ||
+          provider === "kimi-coding" ||
+          provider === "kilocode"
+        ) {
+          result = await runWithProxyContext(proxy, () =>
+            (pollForToken as any)(provider, deviceCode, null, extraData)
+          );
+        } else if (provider === "kiro") {
+          // Kiro needs extraData (clientId, clientSecret) from device code response
+          result = await runWithProxyContext(proxy, () =>
+            (pollForToken as any)(provider, deviceCode, null, extraData)
+          );
+        } else {
+          // Qwen and other providers use PKCE
+          if (!codeVerifier) {
+            return {
+              status: 400,
+              body: {
+                success: false,
+                error: "Missing code verifier",
+              },
+            };
+          }
+          result = await runWithProxyContext(proxy, () =>
+            (pollForToken as any)(provider, deviceCode, codeVerifier)
+          );
         }
-        result = await runWithProxyContext(proxy, () =>
-          (pollForToken as any)(provider, deviceCode, codeVerifier)
-        );
-      }
 
-      if (result.success) {
-        // Normalize: if name is missing, use email as fallback display label
-        if (!result.tokens.name && (result.tokens.email || result.tokens.displayName)) {
-          result.tokens.name = result.tokens.email || result.tokens.displayName;
+        if (result.success) {
+          // Normalize: if name is missing, use email as fallback display label
+          if (!result.tokens.name && (result.tokens.email || result.tokens.displayName)) {
+            result.tokens.name = result.tokens.email || result.tokens.displayName;
+          }
+
+          const connection = await upsertOAuthConnection(provider, result.tokens);
+
+          // Auto sync to Cloud if enabled
+          await syncToCloudIfEnabled();
+
+          return {
+            status: 200,
+            body: {
+              success: true,
+              connection: {
+                id: connection.id,
+                provider: connection.provider,
+              },
+            },
+          };
         }
 
-        const connection = await upsertOAuthConnection(provider, result.tokens);
+        // Still pending or error - don't create connection for pending states
+        const isPending =
+          result.pending ||
+          result.error === "authorization_pending" ||
+          result.error === "slow_down";
 
-        // Auto sync to Cloud if enabled
-        await syncToCloudIfEnabled();
-
-        return NextResponse.json({
-          success: true,
-          connection: {
-            id: connection.id,
-            provider: connection.provider,
+        return {
+          status: 200,
+          body: {
+            success: false,
+            error: result.error,
+            errorDescription: result.errorDescription,
+            pending: isPending,
           },
-        });
-      }
-
-      // Still pending or error - don't create connection for pending states
-      const isPending =
-        result.pending || result.error === "authorization_pending" || result.error === "slow_down";
-
-      return NextResponse.json({
-        success: false,
-        error: result.error,
-        errorDescription: result.errorDescription,
-        pending: isPending,
+        };
       });
+
+      return NextResponse.json(response.body, { status: response.status });
     }
 
     if (action === "poll-callback") {
