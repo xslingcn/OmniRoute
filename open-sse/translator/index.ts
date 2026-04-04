@@ -44,6 +44,33 @@ function normalizeResponsesInputItem(item) {
   return item;
 }
 
+function extractResponsesInstructionText(content) {
+  if (typeof content === "string") return content.trim();
+
+  if (Array.isArray(content)) {
+    return content
+      .map((part) => {
+        if (!part || typeof part !== "object") return "";
+        if (
+          (part.type === "input_text" || part.type === "output_text" || part.type === "text") &&
+          typeof part.text === "string"
+        ) {
+          return part.text.trim();
+        }
+        return "";
+      })
+      .filter(Boolean)
+      .join("\n")
+      .trim();
+  }
+
+  if (content && typeof content === "object" && typeof content.text === "string") {
+    return content.text.trim();
+  }
+
+  return "";
+}
+
 function normalizeOpenAIResponsesRequest(body) {
   if (!body || typeof body !== "object") return body;
 
@@ -57,17 +84,40 @@ function normalizeOpenAIResponsesRequest(body) {
         content: [{ type: "input_text", text: normalized.input }],
       },
     ];
-    return normalized;
   }
 
   if (Array.isArray(normalized.input)) {
     normalized.input = normalized.input.map(normalizeResponsesInputItem);
-    return normalized;
+  } else if (normalized.input && typeof normalized.input === "object") {
+    normalized.input = [normalizeResponsesInputItem(normalized.input)];
   }
 
-  if (normalized.input && typeof normalized.input === "object") {
-    normalized.input = [normalizeResponsesInputItem(normalized.input)];
-    return normalized;
+  if (Array.isArray(normalized.input)) {
+    const instructionParts = [];
+    if (typeof normalized.instructions === "string" && normalized.instructions.trim()) {
+      instructionParts.push(normalized.instructions.trim());
+    }
+
+    const filteredInput = [];
+    for (const item of normalized.input) {
+      if (item && typeof item === "object") {
+        const itemType = item.type || (item.role ? "message" : "");
+        const role = typeof item.role === "string" ? item.role : "";
+
+        if (itemType === "message" && (role === "system" || role === "developer")) {
+          const text = extractResponsesInstructionText(item.content);
+          if (text) instructionParts.push(text);
+          continue;
+        }
+      }
+
+      filteredInput.push(item);
+    }
+
+    normalized.input = filteredInput;
+    if (instructionParts.length > 0) {
+      normalized.instructions = instructionParts.join("\n\n");
+    }
   }
 
   return normalized;

@@ -418,7 +418,7 @@ test("translateRequest normalizes openai-responses input string into list payloa
   assert.equal(translated.input[0].content[0].text, "hello from responses");
 });
 
-test("translateRequest preserves explicit responses input when source was forced to openai", () => {
+test("translateRequest hoists system responses input into instructions when source was forced to openai", () => {
   const originalInput = [
     { type: "message", role: "system", content: "You are GPT-5.4." },
     {
@@ -441,8 +441,35 @@ test("translateRequest preserves explicit responses input when source was forced
     true
   );
 
-  assert.deepEqual(translated.input, originalInput);
-  assert.equal(translated.instructions, undefined);
+  assert.deepEqual(translated.input, [originalInput[1]]);
+  assert.equal(translated.instructions, "You are GPT-5.4.");
+});
+
+test("translateRequest hoists system-only responses passthrough input into instructions", () => {
+  const translated = translateRequest(
+    FORMATS.OPENAI_RESPONSES,
+    FORMATS.OPENAI_RESPONSES,
+    "gpt-5.4",
+    {
+      model: "codex/gpt-5.4",
+      input: [
+        { role: "system", content: "You are GPT-5.4." },
+        { role: "user", content: "<user_query>讲一下这个project</user_query>" },
+      ],
+      stream: true,
+      store: false,
+    },
+    true
+  );
+
+  assert.equal(translated.instructions, "You are GPT-5.4.");
+  assert.deepEqual(translated.input, [
+    {
+      type: "message",
+      role: "user",
+      content: "<user_query>讲一下这个project</user_query>",
+    },
+  ]);
 });
 
 test("translateRequest preserves service_tier when converting openai to openai-responses", () => {
