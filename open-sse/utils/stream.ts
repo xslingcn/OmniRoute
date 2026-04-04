@@ -690,27 +690,31 @@ export function createSSEStream(options: StreamOptions = {}) {
             // Notify caller for call log persistence (include full response body with accumulated content)
             if (onComplete) {
               try {
+                const clientSummary = buildStreamSummaryFromEvents(
+                  clientPayloadCollector.getEvents(),
+                  sourceFormat,
+                  model
+                );
                 const u = usage as Record<string, unknown> | null;
                 const prompt = Number(u?.prompt_tokens ?? u?.input_tokens ?? 0);
                 const completion = Number(u?.completion_tokens ?? u?.output_tokens ?? 0);
-                const content = passthroughAccumulatedContent.trim() || "";
-                const message: Record<string, unknown> = {
-                  role: "assistant",
-                  content: content || null,
-                };
-                const reasoning = passthroughAccumulatedReasoning.trim();
-                if (reasoning) {
-                  message.reasoning_content = reasoning;
-                }
-                if (passthroughToolCalls.size > 0) {
-                  message.tool_calls = [...passthroughToolCalls.values()].sort(
-                    (a, b) => a.index - b.index
-                  );
-                }
-                const responseBody = {
+                const responseBody = clientSummary || {
                   choices: [
                     {
-                      message,
+                      message: {
+                        role: "assistant",
+                        content: passthroughAccumulatedContent.trim() || null,
+                        ...(passthroughAccumulatedReasoning.trim()
+                          ? { reasoning_content: passthroughAccumulatedReasoning.trim() }
+                          : {}),
+                        ...(passthroughToolCalls.size > 0
+                          ? {
+                              tool_calls: [...passthroughToolCalls.values()].sort(
+                                (a, b) => a.index - b.index
+                              ),
+                            }
+                          : {}),
+                      },
                       finish_reason: passthroughHasToolCalls ? "tool_calls" : "stop",
                     },
                   ],
@@ -847,18 +851,22 @@ export function createSSEStream(options: StreamOptions = {}) {
           // Notify caller for call log persistence (include full response body with accumulated content)
           if (onComplete) {
             try {
+              const clientSummary = buildStreamSummaryFromEvents(
+                clientPayloadCollector.getEvents(),
+                sourceFormat,
+                model
+              );
               const u = state?.usage as Record<string, unknown> | null | undefined;
               const prompt = Number(u?.prompt_tokens ?? u?.input_tokens ?? 0);
               const completion = Number(u?.completion_tokens ?? u?.output_tokens ?? 0);
-              const content = (state?.accumulatedContent ?? "").trim() || "";
-              const message: Record<string, unknown> = {
-                role: "assistant",
-                content: content || null,
-              };
               const hasToolCalls = state?.toolCalls?.size > 0;
+              const fallbackMessage: Record<string, unknown> = {
+                role: "assistant",
+                content: (state?.accumulatedContent ?? "").trim() || null,
+              };
               if (hasToolCalls) {
                 // Normalize shape — translators may store different structures
-                message.tool_calls = [...state.toolCalls.values()]
+                fallbackMessage.tool_calls = [...state.toolCalls.values()]
                   .map(
                     (tc: Record<string, unknown>): ToolCall => ({
                       id: (tc.id as string) ?? null,
@@ -872,10 +880,10 @@ export function createSSEStream(options: StreamOptions = {}) {
                   )
                   .sort((a, b) => a.index - b.index);
               }
-              const responseBody = {
+              const responseBody = clientSummary || {
                 choices: [
                   {
-                    message,
+                    message: fallbackMessage,
                     finish_reason: hasToolCalls ? "tool_calls" : "stop",
                   },
                 ],

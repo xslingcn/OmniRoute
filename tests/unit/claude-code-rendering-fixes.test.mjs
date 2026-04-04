@@ -1,9 +1,8 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
-const { openaiResponsesToOpenAIResponse } = await import(
-  "../../open-sse/translator/response/openai-responses.ts"
-);
+const { openaiResponsesToOpenAIResponse } =
+  await import("../../open-sse/translator/response/openai-responses.ts");
 const { FORMATS } = await import("../../open-sse/translator/formats.ts");
 const { createSSETransformStreamWithLogger } = await import("../../open-sse/utils/stream.ts");
 
@@ -192,4 +191,74 @@ test("Responses->Claude: translated Claude SSE is not sanitized into empty OpenA
   assert.match(output, /event: message_delta/);
   assert.match(output, /event: message_stop/);
   assert.doesNotMatch(output, /data: \{"object":"chat\.completion\.chunk"\}\n\n/);
+});
+
+test("Responses->Chat: stream completion summary preserves tool_calls and excludes raw arg deltas", async () => {
+  const encoder = new TextEncoder();
+  const decoder = new TextDecoder();
+  let completedPayload = null;
+
+  const stream = createSSETransformStreamWithLogger(
+    FORMATS.OPENAI_RESPONSES,
+    FORMATS.OPENAI,
+    "codex",
+    null,
+    null,
+    "gpt-5.4",
+    "conn-test",
+    { messages: [{ role: "user", content: "hi" }] },
+    (payload) => {
+      completedPayload = payload;
+    },
+    null
+  );
+
+  const writer = stream.writable.getWriter();
+  await writer.write(
+    encoder.encode(
+      'data: {"type":"response.reasoning_summary_text.delta","delta":"**Exploring repository structure**","item_id":"rs_1","output_index":0,"summary_index":0}\n\n'
+    )
+  );
+  await writer.write(
+    encoder.encode(
+      'data: {"type":"response.output_text.delta","delta":"我先快速梳理这个仓库。","item_id":"msg_1","output_index":1,"content_index":0}\n\n'
+    )
+  );
+  await writer.write(
+    encoder.encode(
+      'data: {"type":"response.output_item.added","item":{"type":"function_call","call_id":"call_repo","name":"Subagent","arguments":""}}\n\n'
+    )
+  );
+  await writer.write(
+    encoder.encode(
+      'data: {"type":"response.function_call_arguments.delta","item_id":"fc_call_repo","output_index":0,"delta":"{\\"description\\":\\"梳理仓库结构\\"}"}\n\n'
+    )
+  );
+  await writer.write(
+    encoder.encode(
+      'data: {"type":"response.completed","response":{"usage":{"input_tokens":12,"output_tokens":5}}}\n\n'
+    )
+  );
+  await writer.close();
+
+  const reader = stream.readable.getReader();
+  while (true) {
+    const { value, done } = await reader.read();
+    if (done) break;
+    decoder.decode(value, { stream: true });
+  }
+  decoder.decode();
+
+  assert.ok(completedPayload);
+  assert.equal(completedPayload.responseBody.choices[0].message.content, "我先快速梳理这个仓库。");
+  assert.equal(
+    completedPayload.responseBody.choices[0].message.reasoning_content,
+    "**Exploring repository structure**"
+  );
+  assert.equal(completedPayload.responseBody.choices[0].message.tool_calls.length, 1);
+  assert.equal(
+    completedPayload.responseBody.choices[0].message.tool_calls[0].function.arguments,
+    '{"description":"梳理仓库结构"}'
+  );
+  assert.equal(completedPayload.responseBody.choices[0].finish_reason, "tool_calls");
 });

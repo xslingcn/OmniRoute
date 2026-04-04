@@ -372,7 +372,7 @@ test("detectFormatFromEndpoint forces OpenAI for /v1/chat/completions", () => {
   assert.equal(format, FORMATS.OPENAI);
 });
 
-test("detectFormatFromEndpoint keeps explicit responses payloads on /v1/chat/completions", () => {
+test("detectFormatFromEndpoint keeps chat semantics on /v1/chat/completions even with input", () => {
   const format = detectFormatFromEndpoint(
     {
       model: "codex/gpt-5.4",
@@ -381,7 +381,7 @@ test("detectFormatFromEndpoint keeps explicit responses payloads on /v1/chat/com
     },
     "/v1/chat/completions"
   );
-  assert.equal(format, FORMATS.OPENAI_RESPONSES);
+  assert.equal(format, FORMATS.OPENAI);
 });
 
 test("detectFormatFromEndpoint forces Claude for /v1/messages", () => {

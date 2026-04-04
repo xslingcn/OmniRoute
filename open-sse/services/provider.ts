@@ -77,12 +77,10 @@ export function detectFormatFromEndpoint(body, endpointPath = "") {
     /\/(?:chat\/completions|completions)(?=\/|$)/i.test(path) ||
     /^(?:chat\/completions|completions)(?=\/|$)/i.test(path)
   ) {
-    // Some clients send Responses-style payloads to /chat/completions while still
-    // expecting Codex/OpenAI Responses semantics. Keep explicit responses fields
-    // authoritative so we do not translate away a valid `input` payload.
-    if (hasResponsesSpecificFields(body)) {
-      return "openai-responses";
-    }
+    // Keep chat-completions response semantics authoritative for this endpoint.
+    // Some clients send Responses-style request fields (input, previous_response_id, etc.)
+    // to /chat/completions, but they still expect Chat Completions-compatible output.
+    // Request translation preserves explicit Responses fields when routing upstream.
     return "openai";
   }
 
