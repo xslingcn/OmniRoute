@@ -322,7 +322,7 @@ export function openaiToOpenAIResponsesRequest(
     model,
     input: shouldPreserveInput ? preservedInput : [],
     stream: true,
-    store: false,
+    store: root.store === undefined ? false : root.store,
   };
 
   const input = result.input as JsonRecord[];
@@ -505,11 +505,46 @@ export function openaiToOpenAIResponsesRequest(
     result.instructions = "";
   }
 
+  // Preserve explicit Responses API fields when this request came through
+  // /chat/completions but already carries Responses-native semantics.
+  if (root.instructions !== undefined && result.instructions === undefined) {
+    result.instructions = root.instructions;
+  }
+  if (root.reasoning !== undefined) {
+    result.reasoning = root.reasoning;
+  }
+  if (root.include !== undefined) {
+    result.include = root.include;
+  }
+  if (root.previous_response_id !== undefined) {
+    result.previous_response_id = root.previous_response_id;
+  }
+  if (root.conversation_id !== undefined) {
+    result.conversation_id = root.conversation_id;
+  }
+  if (root.metadata !== undefined) {
+    result.metadata = root.metadata;
+  }
+  if (root.prompt_cache_retention !== undefined) {
+    result.prompt_cache_retention = root.prompt_cache_retention;
+  }
+  if (root.max_output_tokens !== undefined) {
+    result.max_output_tokens = root.max_output_tokens;
+  } else if (root.max_tokens !== undefined) {
+    result.max_output_tokens = root.max_tokens;
+  }
+  if (root.user !== undefined) {
+    result.user = root.user;
+  }
+  if (root.parallel_tool_calls !== undefined) {
+    result.parallel_tool_calls = root.parallel_tool_calls;
+  }
+
   // Convert tools format
   if (Array.isArray(root.tools)) {
     result.tools = root.tools.map((toolValue) => {
       const tool = toRecord(toolValue);
-      if (tool.type === "function") {
+      if (tool.type === "function" && tool.function) {
         const fn = toRecord(tool.function);
         return {
           type: "function",
@@ -517,6 +552,15 @@ export function openaiToOpenAIResponsesRequest(
           description: toString(fn.description),
           parameters: fn.parameters,
           strict: fn.strict,
+        };
+      }
+      if (tool.type === "function") {
+        return {
+          type: "function",
+          name: toString(tool.name),
+          description: toString(tool.description),
+          parameters: tool.parameters,
+          strict: tool.strict,
         };
       }
       return toolValue;
@@ -543,7 +587,6 @@ export function openaiToOpenAIResponsesRequest(
   // Pass through relevant fields
   if (root.service_tier !== undefined) result.service_tier = root.service_tier;
   if (root.temperature !== undefined) result.temperature = root.temperature;
-  if (root.max_tokens !== undefined) result.max_tokens = root.max_tokens;
   if (root.top_p !== undefined) result.top_p = root.top_p;
 
   return result;

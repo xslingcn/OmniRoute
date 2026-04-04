@@ -9,6 +9,72 @@ function normalizeToolName(value) {
   return typeof value === "string" ? value.trim() : "";
 }
 
+function toRecord(value) {
+  return value && typeof value === "object" && !Array.isArray(value) ? value : {};
+}
+
+function toArray(value) {
+  return Array.isArray(value) ? value : [];
+}
+
+function toString(value, fallback = "") {
+  return typeof value === "string" ? value : fallback;
+}
+
+function extractMessageOutputText(item) {
+  if (!Array.isArray(item?.content)) return "";
+
+  let text = "";
+  for (const part of item.content) {
+    const partObj = toRecord(part);
+    if (partObj.type === "output_text" && typeof partObj.text === "string") {
+      text += partObj.text;
+    }
+  }
+
+  return text;
+}
+
+function findBestCompletedMessageText(output) {
+  const messageItems = output
+    .map((item) => toRecord(item))
+    .filter((item) => item.type === "message" && Array.isArray(item.content));
+
+  for (let i = messageItems.length - 1; i >= 0; i -= 1) {
+    const text = extractMessageOutputText(messageItems[i]);
+    if (text.trim().length > 0) {
+      return text;
+    }
+  }
+
+  if (messageItems.length > 0) {
+    return extractMessageOutputText(messageItems[messageItems.length - 1]);
+  }
+
+  return "";
+}
+
+function extractCompletedToolCalls(output) {
+  const toolCalls = [];
+
+  for (const itemValue of output) {
+    const item = toRecord(itemValue);
+    if (item.type !== "function_call") continue;
+
+    const toolName = normalizeToolName(item.name);
+    if (!toolName) continue;
+
+    toolCalls.push({
+      id: toString(item.call_id) || toString(item.id) || `call_${Date.now()}_${toolCalls.length}`,
+      name: toolName,
+      arguments:
+        typeof item.arguments === "string" ? item.arguments : JSON.stringify(item.arguments ?? {}),
+    });
+  }
+
+  return toolCalls;
+}
+
 /**
  * Translate OpenAI chunk to Responses API events
  * @returns {Array} Array of events with { event, data } structure
@@ -463,12 +529,28 @@ export function openaiResponsesToOpenAIResponse(chunk, state) {
     state.created = Math.floor(Date.now() / 1000);
     state.toolCallIndex = 0;
     state.currentToolCallId = null;
+    state.outputTextBuffer = "";
+    state.seenToolCalls = 0;
+    state.emittedToolCallIds = new Set();
+  }
+
+  if (!state.emittedToolCallIds) {
+    state.emittedToolCallIds = new Set();
+  }
+
+  const responseRecord = toRecord(data.response);
+  if (responseRecord.model && !state.model) {
+    state.model = toString(responseRecord.model);
+  } else if (data.model && !state.model) {
+    state.model = toString(data.model);
   }
 
   // Text content delta
   if (eventType === "response.output_text.delta") {
     const delta = data.delta || "";
     if (!delta) return null;
+
+    state.outputTextBuffer = `${state.outputTextBuffer || ""}${delta}`;
 
     return {
       id: state.chatId,
@@ -503,6 +585,11 @@ export function openaiResponsesToOpenAIResponse(chunk, state) {
       // Defer emission until output_item.done in case the final name is populated there.
       state.currentToolCallDeferred = true;
       return null;
+    }
+
+    if (!state.emittedToolCallIds.has(state.currentToolCallId)) {
+      state.emittedToolCallIds.add(state.currentToolCallId);
+      state.seenToolCalls = (state.seenToolCalls || 0) + 1;
     }
 
     return {
@@ -582,6 +669,11 @@ export function openaiResponsesToOpenAIResponse(chunk, state) {
 
       if (!toolName) {
         return null;
+      }
+
+      if (!state.emittedToolCallIds.has(callId)) {
+        state.emittedToolCallIds.add(callId);
+        state.seenToolCalls = (state.seenToolCalls || 0) + 1;
       }
 
       state.toolCallIndex++;
@@ -688,7 +780,75 @@ export function openaiResponsesToOpenAIResponse(chunk, state) {
 
     if (!state.finishReasonSent) {
       state.finishReasonSent = true;
-      const hadToolCalls = (state.toolCallIndex || 0) > 0;
+      const completedOutput = toArray(responseRecord.output);
+      const completedText = findBestCompletedMessageText(completedOutput);
+      const emittedChunks = [];
+
+      if (completedText) {
+        const streamedText = toString(state.outputTextBuffer);
+        let missingText = "";
+
+        if (!streamedText) {
+          missingText = completedText;
+        } else if (completedText.startsWith(streamedText)) {
+          missingText = completedText.slice(streamedText.length);
+        }
+
+        if (missingText) {
+          state.outputTextBuffer = `${streamedText}${missingText}`;
+          emittedChunks.push({
+            id: state.chatId,
+            object: "chat.completion.chunk",
+            created: state.created,
+            model: state.model || "gpt-4",
+            choices: [
+              {
+                index: 0,
+                delta: { content: missingText },
+                finish_reason: null,
+              },
+            ],
+          });
+        }
+      }
+
+      const completedToolCalls = extractCompletedToolCalls(completedOutput);
+      for (const toolCall of completedToolCalls) {
+        if (state.emittedToolCallIds.has(toolCall.id)) continue;
+
+        state.emittedToolCallIds.add(toolCall.id);
+        state.seenToolCalls = (state.seenToolCalls || 0) + 1;
+
+        emittedChunks.push({
+          id: state.chatId,
+          object: "chat.completion.chunk",
+          created: state.created,
+          model: state.model || "gpt-4",
+          choices: [
+            {
+              index: 0,
+              delta: {
+                tool_calls: [
+                  {
+                    index: state.toolCallIndex,
+                    id: toolCall.id,
+                    type: "function",
+                    function: {
+                      name: toolCall.name,
+                      arguments: toolCall.arguments,
+                    },
+                  },
+                ],
+              },
+              finish_reason: null,
+            },
+          ],
+        });
+
+        state.toolCallIndex++;
+      }
+
+      const hadToolCalls = (state.seenToolCalls || 0) > 0 || (state.toolCallIndex || 0) > 0;
       const reason = hadToolCalls ? "tool_calls" : "stop";
       state.finishReason = reason; // Mark for usage injection in stream.js
 
@@ -711,7 +871,7 @@ export function openaiResponsesToOpenAIResponse(chunk, state) {
         finalChunk.usage = state.usage;
       }
 
-      return finalChunk;
+      return [...emittedChunks, finalChunk];
     }
     return null;
   }

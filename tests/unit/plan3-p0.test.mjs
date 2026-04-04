@@ -445,6 +445,209 @@ test("translateRequest hoists system responses input into instructions when sour
   assert.equal(translated.instructions, "You are GPT-5.4.");
 });
 
+test("translateRequest preserves responses-native fields when /chat request is coerced through openai", () => {
+  const translated = translateRequest(
+    FORMATS.OPENAI,
+    FORMATS.OPENAI_RESPONSES,
+    "gpt-5.4",
+    {
+      model: "codex/gpt-5.4",
+      input: [
+        { type: "message", role: "system", content: "You are GPT-5.4." },
+        {
+          type: "message",
+          role: "user",
+          content: [{ type: "input_text", text: "讲一下这个 project" }],
+        },
+      ],
+      reasoning: { effort: "high", summary: "auto" },
+      previous_response_id: "resp_prev_123",
+      conversation_id: "conv_123",
+      include: ["reasoning.encrypted_content"],
+      max_output_tokens: 777,
+      parallel_tool_calls: true,
+      stream: true,
+      store: false,
+    },
+    true
+  );
+
+  assert.equal(translated.instructions, "You are GPT-5.4.");
+  assert.deepEqual(translated.reasoning, { effort: "high", summary: "auto" });
+  assert.equal(translated.previous_response_id, "resp_prev_123");
+  assert.equal(translated.conversation_id, "conv_123");
+  assert.deepEqual(translated.include, ["reasoning.encrypted_content"]);
+  assert.equal(translated.max_output_tokens, 777);
+  assert.equal(translated.parallel_tool_calls, true);
+});
+
+test("translateRequest preserves responses-native function tools on /chat completions", () => {
+  const translated = translateRequest(
+    FORMATS.OPENAI,
+    FORMATS.OPENAI_RESPONSES,
+    "gpt-5.4",
+    {
+      model: "codex/gpt-5.4",
+      input: [
+        {
+          type: "message",
+          role: "user",
+          content: [{ type: "input_text", text: "你现在到底能看到什么？" }],
+        },
+      ],
+      tools: [
+        {
+          type: "function",
+          name: "Shell",
+          description: "Executes a given command in a shell session",
+          parameters: {
+            type: "object",
+            properties: {
+              command: { type: "string" },
+            },
+            required: ["command"],
+          },
+        },
+        {
+          type: "function",
+          name: "ReadFile",
+          description: "Reads a file from the local filesystem",
+          parameters: {
+            type: "object",
+            properties: {
+              path: { type: "string" },
+            },
+            required: ["path"],
+          },
+        },
+      ],
+      stream: true,
+      store: false,
+    },
+    true
+  );
+
+  assert.deepEqual(translated.tools, [
+    {
+      type: "function",
+      name: "Shell",
+      description: "Executes a given command in a shell session",
+      parameters: {
+        type: "object",
+        properties: {
+          command: { type: "string" },
+        },
+        required: ["command"],
+      },
+      strict: undefined,
+    },
+    {
+      type: "function",
+      name: "ReadFile",
+      description: "Reads a file from the local filesystem",
+      parameters: {
+        type: "object",
+        properties: {
+          path: { type: "string" },
+        },
+        required: ["path"],
+      },
+      strict: undefined,
+    },
+  ]);
+});
+
+test("translateRequest preserves flattened function tools on openai target", () => {
+  const translated = translateRequest(
+    FORMATS.OPENAI,
+    FORMATS.OPENAI,
+    "gpt-4o",
+    {
+      model: "gpt-4o",
+      messages: [{ role: "user", content: "hi" }],
+      tools: [
+        {
+          type: "function",
+          name: "Shell",
+          description: "Executes a given command in a shell session",
+          parameters: {
+            type: "object",
+            properties: {
+              command: { type: "string" },
+            },
+            required: ["command"],
+          },
+          strict: true,
+        },
+      ],
+    },
+    false
+  );
+
+  assert.deepEqual(translated.tools, [
+    {
+      type: "function",
+      function: {
+        name: "Shell",
+        description: "Executes a given command in a shell session",
+        parameters: {
+          type: "object",
+          properties: {
+            command: { type: "string" },
+          },
+          required: ["command"],
+        },
+      },
+      strict: true,
+    },
+  ]);
+});
+
+test("translateRequest preserves flattened function tools on gemini target", () => {
+  const translated = translateRequest(
+    FORMATS.OPENAI,
+    FORMATS.GEMINI,
+    "gemini-2.5-pro",
+    {
+      model: "gemini-2.5-pro",
+      messages: [{ role: "user", content: "hi" }],
+      tools: [
+        {
+          type: "function",
+          name: "ReadFile",
+          description: "Reads a file from the local filesystem",
+          parameters: {
+            type: "object",
+            properties: {
+              path: { type: "string" },
+            },
+            required: ["path"],
+          },
+        },
+      ],
+    },
+    false
+  );
+
+  assert.deepEqual(translated.tools, [
+    {
+      functionDeclarations: [
+        {
+          name: "ReadFile",
+          description: "Reads a file from the local filesystem",
+          parameters: {
+            type: "object",
+            properties: {
+              path: { type: "string" },
+            },
+            required: ["path"],
+          },
+        },
+      ],
+    },
+  ]);
+});
+
 test("translateRequest hoists system-only responses passthrough input into instructions", () => {
   const translated = translateRequest(
     FORMATS.OPENAI_RESPONSES,

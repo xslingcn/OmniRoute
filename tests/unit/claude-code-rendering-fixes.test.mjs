@@ -5,6 +5,7 @@ const { openaiResponsesToOpenAIResponse } =
   await import("../../open-sse/translator/response/openai-responses.ts");
 const { FORMATS } = await import("../../open-sse/translator/formats.ts");
 const { createSSETransformStreamWithLogger } = await import("../../open-sse/utils/stream.ts");
+const { parseSSEToOpenAIResponse } = await import("../../open-sse/handlers/sseParser.ts");
 
 test("Responses->Chat: output_item.done emits arguments when no delta chunks were sent", () => {
   const state = {
@@ -261,4 +262,62 @@ test("Responses->Chat: stream completion summary preserves tool_calls and exclud
     '{"description":"梳理仓库结构"}'
   );
   assert.equal(completedPayload.responseBody.choices[0].finish_reason, "tool_calls");
+});
+
+test("Responses->Chat: response.completed output backfills tool calls missing from incremental events", async () => {
+  const encoder = new TextEncoder();
+  const decoder = new TextDecoder();
+  let completedPayload = null;
+
+  const stream = createSSETransformStreamWithLogger(
+    FORMATS.OPENAI_RESPONSES,
+    FORMATS.OPENAI,
+    "codex",
+    null,
+    null,
+    "gpt-5.4",
+    "conn-test",
+    { messages: [{ role: "user", content: "hi" }] },
+    (payload) => {
+      completedPayload = payload;
+    },
+    null
+  );
+
+  const writer = stream.writable.getWriter();
+  await writer.write(
+    encoder.encode(
+      'data: {"type":"response.output_text.delta","delta":"我再从实际代码实现层面补充一下。","item_id":"msg_1","output_index":0,"content_index":0}\n\n'
+    )
+  );
+  await writer.write(
+    encoder.encode(
+      'data: {"type":"response.completed","response":{"id":"resp_1","object":"response","model":"gpt-5.4","usage":{"input_tokens":12,"output_tokens":5},"output":[{"type":"message","role":"assistant","content":[{"type":"output_text","text":"我再从实际代码实现层面补充一下。"}]},{"type":"function_call","id":"fc_1","call_id":"call_readme","name":"ReadFile","arguments":"{\\"path\\":\\"/tmp/README.md\\"}"}]}}\n\n'
+    )
+  );
+  await writer.close();
+
+  const reader = stream.readable.getReader();
+  let output = "";
+  while (true) {
+    const { value, done } = await reader.read();
+    if (done) break;
+    output += decoder.decode(value, { stream: true });
+  }
+  output += decoder.decode();
+
+  const parsed = parseSSEToOpenAIResponse(output, "gpt-5.4");
+  assert.ok(parsed);
+  assert.equal(parsed.choices[0].finish_reason, "tool_calls");
+  assert.equal(parsed.choices[0].message.content, "我再从实际代码实现层面补充一下。");
+  assert.equal(parsed.choices[0].message.tool_calls.length, 1);
+  assert.equal(parsed.choices[0].message.tool_calls[0].function.name, "ReadFile");
+  assert.equal(
+    parsed.choices[0].message.tool_calls[0].function.arguments,
+    '{"path":"/tmp/README.md"}'
+  );
+
+  assert.ok(completedPayload);
+  assert.equal(completedPayload.responseBody.choices[0].finish_reason, "tool_calls");
+  assert.equal(completedPayload.responseBody.choices[0].message.tool_calls.length, 1);
 });

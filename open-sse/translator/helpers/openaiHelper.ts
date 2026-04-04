@@ -102,6 +102,23 @@ export function filterToOpenAIFormat(body) {
         // Already OpenAI format
         if (tool.type === "function" && tool.function) return tool;
 
+        // Responses-native / flattened function tool format
+        if (tool.type === "function" && tool.name) {
+          const normalized = {
+            type: "function",
+            function: {
+              name: tool.name,
+              description: tool.description || "",
+              parameters: tool.parameters ||
+                tool.input_schema || { type: "object", properties: {} },
+            },
+          };
+          if (tool.strict !== undefined) {
+            normalized.strict = tool.strict;
+          }
+          return normalized;
+        }
+
         // Claude format: {name, description, input_schema}
         if (tool.name && (tool.input_schema || tool.description)) {
           return {

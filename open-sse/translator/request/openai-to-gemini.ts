@@ -267,8 +267,18 @@ function openaiToGeminiBase(model, body, stream) {
   if (body.tools && Array.isArray(body.tools) && body.tools.length > 0) {
     const functionDeclarations = [];
     for (const t of body.tools) {
+      // Responses-native / flattened function tool format
+      if (t.type === "function" && t.name) {
+        functionDeclarations.push({
+          name: t.name,
+          description: t.description || "",
+          parameters: cleanJSONSchemaForAntigravity(
+            t.parameters || t.input_schema || { type: "object", properties: {} }
+          ),
+        });
+      }
       // Check if already in Anthropic/Claude format (no type field, direct name/description/input_schema)
-      if (t.name && t.input_schema) {
+      else if (t.name && t.input_schema) {
         functionDeclarations.push({
           name: t.name,
           description: t.description || "",
